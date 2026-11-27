@@ -1,4 +1,3 @@
-
 import random
 import time
 import json
@@ -7,27 +6,25 @@ from pathlib import Path
 
 BG, PANEL, ACCENT = "#111a2b", "#253752", "#eb98dc"
 SYMBOLS = ["★", "◆", "♥", "☀", "☂", "♫", "✿", "♠"]
-SAVE_FILE = Path.home() / ".memory_flip_score.json"
+SAVE_FILE = Path.home() / ".memory_flip_scores.json"
 
 
 class MemoryApp:
     def __init__(self, root):
         self.root = root
-        self.best = self.load_best()
-        self.job = None
+        self.best_time = self.load_score()
 
         root.title("Memory Flip")
         root.configure(bg=BG)
         root.resizable(False, False)
 
-        tk.Label(root, text="MEMORY FLIP", bg=BG, fg=ACCENT,
-                 font=("Segoe UI", 23, "bold")).pack(pady=(12, 5))
+        tk.Label(root, text="MEMORY FLIP", bg=BG, fg=ACCENT, font=("Segoe UI", 23, "bold")).pack(pady=(12, 5))
 
         self.info = tk.Label(root, bg=BG, fg="white", font=("Segoe UI", 12))
         self.info.pack()
 
-        self.best_label = tk.Label(root, bg=BG, fg=ACCENT, font=("Segoe UI", 11, "bold"))
-        self.best_label.pack(pady=5)
+        self.score_label = tk.Label(root, bg=BG, fg="#e9c575", font=("Segoe UI", 11, "bold"))
+        self.score_label.pack(pady=5)
 
         frame = tk.Frame(root, bg=BG)
         frame.pack(padx=16, pady=12)
@@ -35,51 +32,42 @@ class MemoryApp:
         self.buttons = []
 
         for i in range(16):
-            button = tk.Button(frame, text="?", width=4, height=2,
-                               bg=PANEL, fg="white", relief="flat",
-                               font=("Segoe UI Symbol", 23, "bold"),
-                               command=lambda index=i: self.flip(index))
+            button = tk.Button(frame, text="?", width=4, height=2, bg=PANEL, fg="white", font=("Segoe UI Symbol", 23, "bold"), relief="flat", command=lambda index=i: self.flip(index))
             button.grid(row=i // 4, column=i % 4, padx=5, pady=5)
             self.buttons.append(button)
 
-        tk.Button(root, text="SHUFFLE / NEW GAME", command=self.reset,
-                  bg=ACCENT, relief="flat").pack(pady=(0, 14))
+        tk.Button(root, text="SHUFFLE / NEW GAME", command=self.reset, bg=ACCENT, relief="flat").pack(pady=(0, 14))
 
+        self.job = None
         self.reset()
 
-    def load_best(self):
+    def load_score(self):
         try:
             data = json.loads(SAVE_FILE.read_text(encoding="utf-8"))
-            score = data.get("best_moves")
+            score = float(data["best_time"])
 
-            if type(score) is int and score >= 8:
+            if 0 < score < float("inf"):
                 return score
 
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError, TypeError, KeyError):
             pass
 
         return None
 
-    def save_best(self):
+    def save_score(self):
         try:
-            temporary = SAVE_FILE.with_suffix(".tmp")
-            temporary.write_text(json.dumps({"best_moves": self.best}), encoding="utf-8")
-            temporary.replace(SAVE_FILE)
-        except OSError as error:
-            print(f"Could not save best score: {error}")
-
-    def refresh_best(self):
-        score = self.best if self.best is not None else "—"
-        self.best_label.config(text=f"BEST SCORE: {score} moves")
-
-    def check_record(self):
-        if self.best is None or self.moves < self.best:
-            self.best = self.moves
-            self.save_best()
-            self.refresh_best()
+            data = {"best_time": self.best_time}
+            SAVE_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
             return True
 
-        return False
+        except OSError:
+            return False
+
+    def update_score_label(self):
+        if self.best_time is None:
+            self.score_label.config(text="PERSONAL BEST: --")
+        else:
+            self.score_label.config(text=f"PERSONAL BEST: {self.best_time:.2f}s")
 
     def reset(self):
         if self.job is not None:
@@ -93,55 +81,62 @@ class MemoryApp:
         self.opened = []
         self.moves = 0
         self.locked = False
+        self.finished = False
         self.start_time = time.monotonic()
 
         for button in self.buttons:
             button.config(text="?", bg=PANEL, fg="white")
 
         self.info.config(text="0 pairs  •  0 moves")
-        self.refresh_best()
-
-    def finish(self):
-        elapsed = int(time.monotonic() - self.start_time)
-        record = self.check_record()
-
-        self.locked = True
-
-        text = f"YOU WON! {self.moves} moves • {elapsed}s"
-
-        if record:
-            text += "\nNEW PERSONAL RECORD!"
-
-        self.info.config(text=text)
+        self.update_score_label()
 
     def flip(self, index):
-        if self.locked or index in self.revealed or index in self.opened:
+        if self.finished or self.locked or index in self.revealed or index in self.opened:
             return
 
         self.buttons[index].config(text=self.deck[index], bg="#3f5375", fg=ACCENT)
         self.opened.append(index)
 
-        if len(self.opened) != 2:
-            return
+        if len(self.opened) == 2:
+            self.moves += 1
+            first, second = self.opened
 
-        self.moves += 1
-        first, second = self.opened
+            if self.deck[first] == self.deck[second]:
+                self.revealed.update(self.opened)
 
-        if self.deck[first] == self.deck[second]:
-            self.revealed.update(self.opened)
+                for i in self.opened:
+                    self.buttons[i].config(bg="#2d876f", fg="white")
 
-            for i in self.opened:
-                self.buttons[i].config(bg="#2d876f", fg="white")
+                self.opened = []
 
-            self.opened = []
+            else:
+                self.locked = True
+                self.job = self.root.after(800, self.hide)
+
+            if len(self.revealed) == len(self.deck):
+                self.finish_game()
+
+            else:
+                self.info.config(text=f"{len(self.revealed) // 2} pairs • {self.moves} moves")
+
+    def finish_game(self):
+        self.finished = True
+        self.locked = True
+
+        elapsed = time.monotonic() - self.start_time
+
+        if self.best_time is None or elapsed < self.best_time:
+            self.best_time = elapsed
+            saved = self.save_score()
+
+            self.info.config(text=f"NEW RECORD! {self.moves} moves • {elapsed:.2f}s")
+            self.update_score_label()
+
+            if not saved:
+                self.score_label.config(text=f"PERSONAL BEST: {elapsed:.2f}s (Not saved)")
+
         else:
-            self.locked = True
-            self.job = self.root.after(800, self.hide)
-
-        if len(self.revealed) == 16:
-            self.finish()
-        else:
-            self.info.config(text=f"{len(self.revealed) // 2} pairs • {self.moves} moves")
+            self.info.config(text=f"YOU WON! {self.moves} moves • {elapsed:.2f}s")
 
     def hide(self):
         self.job = None
